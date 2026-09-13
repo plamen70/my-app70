@@ -393,7 +393,7 @@ elif choice == "📝 Вход / Изход с Документ":
                         st.warning(err_sup)
 
         action = st.radio("Изберете операция:", ["Заприходяване (Вход +)", "Изписване (Изход -)"], key="action_select")
-
+        
         is_entry = "Вход" in action
         party_label = "Доставчик" if is_entry else "Клиент"
 
@@ -409,7 +409,7 @@ elif choice == "📝 Вход / Изход с Документ":
                                              value=float(current_price), format="%.2f")
 
             st.markdown("##### 📄 Данни за Документа")
-            d1, d2, d3 = st.columns(3)
+            d1, d2, d3, d4 = st.columns(4)
             with d1:
                 doc_type = st.selectbox("Вид документ", ["Фактура", "Стокова разписка", "Приемо-предавателен протокол",
                                                          "Инвентаризационен акт", "Друг"])
@@ -417,19 +417,17 @@ elif choice == "📝 Вход / Изход с Документ":
                 doc_number = st.text_input("Номер на документ*", placeholder="напр. 0000001234")
             with d3:
                 doc_date = st.date_input("Дата на документ", date.today())
+            with d4:
+                doc_time = st.time_input("Час на документ", datetime.now().time())
 
             st.markdown(f"##### 🏢 Данни за Контрагента ({party_label})")
             sup1, sup2, sup3 = st.columns(3)
             with sup1:
-                supplier_name = st.text_input(f"Фирма ({party_label})", value=st.session_state['sup_name_val'],
-                                              placeholder="напр. Клиент ЕООД")
+                supplier_name = st.text_input(f"Фирма ({party_label})", value=st.session_state['sup_name_val'], placeholder="напр. Клиент ЕООД")
             with sup2:
-                supplier_eik = st.text_input(f"ЕИК / БУЛСТАТ ({party_label})",
-                                             value=eik_sup_search if 'sup_eik_search' in st.session_state and eik_sup_search else "",
-                                             placeholder="напр. 123456789")
+                supplier_eik = st.text_input(f"ЕИК / БУЛСТАТ ({party_label})", value=eik_sup_search if 'sup_eik_search' in st.session_state and eik_sup_search else "", placeholder="напр. 123456789")
             with sup3:
-                supplier_address = st.text_input(f"Адрес ({party_label})", value=st.session_state['sup_addr_val'],
-                                                 placeholder="гр. Попово, ул. Промишлена 1")
+                supplier_address = st.text_input(f"Адрес ({party_label})", value=st.session_state['sup_addr_val'], placeholder="гр. Попово, ул. Промишлена 1")
 
             submit_move = st.form_submit_button("💾 Регистрирай движението")
 
@@ -443,6 +441,7 @@ elif choice == "📝 Вход / Изход с Документ":
                     else:
                         action_text = "Вход (+)" if is_entry else "Изход (-)"
                         change_val = change_qty if is_entry else -change_qty
+                        full_timestamp = datetime.combine(doc_date, doc_time).strftime("%Y-%m-%d %H:%M:%S")
 
                         cursor.execute("UPDATE inventory SET quantity = ?, price = ? WHERE id = ?",
                                        (new_qty, unit_price, item_id))
@@ -454,10 +453,10 @@ elif choice == "📝 Вход / Изход с Документ":
                             (current_company_id, item_name, action_text, change_val, unit_price,
                              doc_type, doc_number, doc_date.strftime("%d.%m.%Y"),
                              supplier_name.strip(), supplier_eik.strip(), supplier_address.strip(),
-                             datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+                             full_timestamp)
                         )
                         conn.commit()
-                        st.success(f"✅ Запазено! Ново количество за '{item_name}': {new_qty} бр.")
+                        st.success(f"✅ Запазено с час {doc_time.strftime('%H:%M')}! Ново количество за '{item_name}': {new_qty} бр.")
                         st.rerun()
     else:
         st.info("Няма налични артикули за тази фирма.")
@@ -566,6 +565,29 @@ elif choice == "📜 История и Документи":
             pdf_history = generate_pdf(df_history, f"Журнал Движения - {selected_company_name}")
             st.download_button("📥 Изтегли Журнала в PDF", data=pdf_history,
                                file_name=f"zhurnal_{datetime.now().strftime('%Y%m%d')}.pdf", mime="application/pdf")
+
+        st.markdown("---")
+        st.markdown("#### ✏️ Корекция на дата и час на съществуващо движение")
+        cursor.execute("SELECT id, item_name, timestamp, doc_number FROM movement_history WHERE company_id = ? ORDER BY id DESC LIMIT 50", (current_company_id,))
+        move_rows = cursor.fetchall()
+        if move_rows:
+            move_dict = {f"ID {m[0]} | Артикул: {m[1]} | Текущо време: {m[2]} (Док. № {m[3]})": m[0] for m in move_rows}
+            selected_move_label = st.selectbox("Изберете запис за корекция на дата/час:", list(move_dict.keys()))
+            selected_move_id = move_dict[selected_move_label]
+
+            col_m1, col_m2, col_m3 = st.columns(3)
+            with col_m1:
+                new_date_val = st.date_input("Нова дата:")
+            with col_m2:
+                new_time_val = st.time_input("Нов час:")
+            with col_m3:
+                st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
+                if st.button("💾 Обнови дата и час"):
+                    new_full_ts = datetime.combine(new_date_val, new_time_val).strftime("%Y-%m-%d %H:%M:%S")
+                    cursor.execute("UPDATE movement_history SET timestamp = ? WHERE id = ?", (new_full_ts, selected_move_id))
+                    conn.commit()
+                    st.success("✅ Датата и часът бяха обновени успешно!")
+                    st.rerun()
     else:
         st.info("Няма регистрирани движения.")
 
@@ -650,7 +672,7 @@ elif choice == "📦 Архивиране и Възстановяване":
 
     with col_bak1:
         st.markdown("#### 📥 Създаване на архив (Backup)")
-
+        
         period_option = st.selectbox(
             "Изберете период за филтриране на движенията:",
             ["За 1 месец", "За 6 месеца", "За 1 година", "От дата до дата (произволен)", "Всички данни (Пълен архив)"]
@@ -684,7 +706,7 @@ elif choice == "📦 Архивиране и Възстановяване":
                 start_str = start_date.strftime("%Y-%m-%d 00:00:00")
                 end_str = (end_date + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
                 df_movements = pd.read_sql_query(
-                    "SELECT * FROM movement_history WHERE timestamp >= ? AND timestamp < ?",
+                    "SELECT * FROM movement_history WHERE timestamp >= ? AND timestamp < ?", 
                     conn, params=(start_str, end_str)
                 )
                 period_label = f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"
@@ -728,14 +750,12 @@ elif choice == "📦 Архивиране и Възстановяване":
                     for comp in data.get('companies', []):
                         cursor.execute(
                             "INSERT OR REPLACE INTO companies (id, name, eik, address, mol) VALUES (?, ?, ?, ?, ?)",
-                            (comp.get('id'), comp.get('name'), comp.get('eik', ''), comp.get('address', ''),
-                             comp.get('mol', ''))
+                            (comp.get('id'), comp.get('name'), comp.get('eik', ''), comp.get('address', ''), comp.get('mol', ''))
                         )
                     for item in data.get('inventory', []):
                         cursor.execute(
                             "INSERT OR REPLACE INTO inventory (id, company_id, name, category, quantity, min_limit, price) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                            (item.get('id'), item.get('company_id'), item.get('name'), item.get('category'),
-                             item.get('quantity'), item.get('min_limit'), item.get('price'))
+                            (item.get('id'), item.get('company_id'), item.get('name'), item.get('category'), item.get('quantity'), item.get('min_limit'), item.get('price'))
                         )
                     for move in data.get('movement_history', []):
                         cursor.execute(
