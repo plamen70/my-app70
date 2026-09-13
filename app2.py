@@ -209,7 +209,7 @@ if not st.session_state['logged_in']:
     st.markdown("<h2 style='text-align: center;'>🔒 Вход в Складовата Система</h2>", unsafe_allow_html=True)
 
     with st.form("login_form"):
-        col1, col2, col3 = st.columns([1, 2, 1])
+        col1, col2, col3 = st.columns(3)
         with col2:
             user_input = st.text_input("Потребителско име")
             pass_input = st.text_input("Парола", type="password")
@@ -235,7 +235,7 @@ if not st.session_state['logged_in']:
 cursor = conn.cursor()
 cursor.execute("SELECT id, name FROM companies")
 companies = cursor.fetchall()
-company_dict = {comp[1]: comp[0] for comp in companies}
+company_dict = {comp: comp[0] for comp in companies}
 
 st.sidebar.markdown(f"👤 **Потребител:** `{st.session_state['username']}`")
 
@@ -322,46 +322,119 @@ def generate_pdf(df, title="Складова Справка"):
 
 
 # --- 8. ОСНОВНИ МОДУЛИ ---
-
 # --- 8.1. ТАБЛО & НАЛИЧНОСТИ ---
 if choice == "📊 Табло & Наличности":
-    st.subheader(f"📊 Склад на: {selected_company_name}")
+    st.subheader(f"📊 Склад и справка по период на: {selected_company_name}")
 
-    df = pd.read_sql_query(
-        "SELECT id AS ID, name AS 'Артикул', category AS 'Категория', quantity AS 'Количество', min_limit AS 'Мин. праг', price AS 'Ед. цена (лв.)' FROM inventory WHERE company_id = ?",
+    # Филтър по период за справката
+    st.markdown("##### 📅 Избор на период за справка по салда и движения")
+    col_per1, col_per2, col_per3 = st.columns(3)
+    with col_per1:
+        start_rep_date = st.date_input("От дата:", date.today() - timedelta(days=30), key="rep_start_date")
+    with col_per2:
+        end_rep_date = st.date_input("До дата:", date.today(), key="rep_end_date")
+    with col_per3:
+        item_filter_mode = st.selectbox("Филтър по артикули:", ["Всички артикули", "Избор на конкретен артикул"])
+
+    # Зареждане на номенклатурата
+    df_inv = pd.read_sql_query(
+        "SELECT id AS ID, name AS 'Артикул', category AS 'Категория', quantity AS 'Текущо количество', min_limit AS 'Мин. праг', price AS 'Ед. цена (лв.)' FROM inventory WHERE company_id = ?",
         conn, params=(current_company_id,)
     )
 
-    if not df.empty:
-        df["Обща стойност (лв.)"] = df["Количество"] * df["Ед. цена (лв.)"]
+    if not df_inv.empty:
+        if item_filter_mode == "Избор на конкретен артикул":
+            selected_item_name_rep = st.selectbox("Изберете артикул:", df_inv['Артикул'].tolist())
+            df_inv = df_inv[df_inv['Артикул'] == selected_item_name_rep]
+
+        # Зареждане на движенията за пресмятане на Приход / Разход / Начално салдо
+        df_moves = pd.read_sql_query(
+            "SELECT item_name, quantity_change, unit_price, timestamp, doc_date FROM movement_history WHERE company_id = ?",
+            conn, params=(current_company_id,)
+        )
+
+        start_dt_str = start_rep_date.strftime("%Y-%m-%d 00:00:00")
+        end_dt_str = (end_rep_date + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+
+        report_rows = []
+        for idx, row in df_inv.iterrows():
+            item_name = row['Артикул']
+            curr_qty = row['Текущо количество']
+            unit_price = float(row['Ед. цена (лв.)'])
+
+            # Движения след крайния период до сега
+            moves_after_end = df_moves[(df_moves['item_name'] == item_name) & (df_moves['timestamp'] >= end_dt_str)]
+            sum_after_end = moves_after_end['quantity_change'].sum() if not moves_after_end.empty else 0
+
+            # Движения в рамките на периода [start_dt_str, end_dt_str)
+            moves_in_period = df_moves[
+                (df_moves['item_name'] == item_name) &
+                (df_moves['timestamp'] >= start_dt_str) &
+                (df_moves['timestamp'] < end_dt_str)
+            ]
+
+            inflow_qty = moves_in_period[moves_in_period['quantity_change'] > 0]['quantity_change'].sum() if not moves_in_period.empty else 0
+            outflow_qty = abs(moves_in_period[moves_in_period['quantity_change'] < 0]['quantity_change'].sum()) if not moves_in_period.empty else 0
+
+            inflow_price = moves_in_period[moves_in_period['quantity_change'] > 0]['unit_price'].mean() if (not moves_in_period.empty and not moves_in_period[moves_in_period['quantity_change'] > 0].empty) else unit_price
+            if pd.isna(inflow_price):
+                inflow_price = unit_price
+
+            outflow_price = moves_in_period[moves_in_period['quantity_change'] < 0]['unit_price'].mean() if (not moves_in_period.empty and not moves_in_period[moves_in_period['quantity_change'] < 0].empty) else unit_price
+            if pd.isna(outflow_price):
+                outflow_price = unit_price
+
+            final_bal_qty = curr_qty - sum_after_end
+            init_bal_qty = final_bal_qty - inflow_qty + outflow_qty
+
+            init_val = init_bal_qty * unit_price
+            inflow_val = inflow_qty * inflow_price
+            outflow_val = outflow_qty * outflow_price
+            final_val = final_bal_qty * unit_price
+
+            report_rows.append({
+                'ID': row['ID'],
+                'Артикул': item_name,
+                'Категория': row['Категория'],
+                'Нач. кол.': init_bal_qty,
+                'Нач. цена': unit_price,
+                'Нач. стойност': init_val,
+                'Приход кол.': inflow_qty,
+                'Приход цена': inflow_price,
+                'Приход стойност': inflow_val,
+                'Разход кол.': outflow_qty,
+                'Разход цена': outflow_price,
+                'Разход стойност': outflow_val,
+                'Край кол.': final_bal_qty,
+                'Край цена': unit_price,
+                'Крайна стойност': final_val
+            })
+
+        df_report = pd.DataFrame(report_rows)
 
         kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-        kpi1.metric("📦 Номенклатури", f"{len(df)} бр.")
-        kpi2.metric("🔢 Общо количества", f"{df['Количество'].sum():,} бр.".replace(",", " "))
-        kpi3.metric("💰 Обща стойност", f"{df['Обща стойност (лв.)'].sum():,.2f} лв.".replace(",", " "))
-
-        critical_count = len(df[df['Количество'] <= df['Мин. праг']])
-        kpi4.metric("⚠️ Критични позиции", f"{critical_count} бр.", delta_color="inverse")
+        kpi1.metric("📦 Позиции", f"{len(df_report)} бр.")
+        kpi2.metric("📥 Общ приход (кол.)", f"{df_report['Приход кол.'].sum():,} бр.".replace(",", " "))
+        kpi3.metric("📤 Общ разход (кол.)", f"{df_report['Разход кол.'].sum():,} бр.".replace(",", " "))
+        kpi4.metric("💰 Крайна стойност", f"{df_report['Крайна стойност'].sum():,.2f} лв.".replace(",", " "))
 
         st.markdown("---")
-        st.markdown("### 📋 Списък на складовите наличности")
-        st.dataframe(df, use_container_width=True, height=300)
+        st.markdown("### 📋 Справка по период (Нач. салдо → Приход → Разход → Крайно салдо)")
+        st.dataframe(df_report, use_container_width=True, height=350)
 
         col_pdf, col_csv = st.columns(2)
         with col_pdf:
             if PDF_AVAILABLE:
-                pdf_data = generate_pdf(df, f"Справка Наличности - {selected_company_name}")
-                st.download_button("📥 Изтегли Наличностите в PDF", data=pdf_data,
-                                   file_name=f"nalichnosti_{datetime.now().strftime('%Y%m%d')}.pdf",
+                pdf_data = generate_pdf(df_report, f"Справка Салда - {selected_company_name}")
+                st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
+                                   file_name=f"spravka_salda_{datetime.now().strftime('%Y%m%d')}.pdf",
                                    mime="application/pdf")
         with col_csv:
-            csv_data = df.to_csv(index=False).encode('utf-8-sig')
-            st.download_button("📥 Изтегли Наличностите в CSV (Excel)", data=csv_data,
-                               file_name=f"nalichnosti_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+            csv_data = df_report.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Изтегли Справката в CSV (Excel)", data=csv_data,
+                               file_name=f"spravka_salda_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
     else:
         st.info("Няма въведени артикули за тази фирма.")
-
-
 # --- 8.2. ВХОД / ИЗХОД С ДОКУМЕНТ ---
 elif choice == "📝 Вход / Изход с Документ":
     st.subheader(f"📝 Движение на стока за: {selected_company_name}")
@@ -371,8 +444,8 @@ elif choice == "📝 Вход / Изход с Документ":
 
     if items:
         item_dict = {
-            f"{item[1]} (Наличност: {item[2]} бр. | Цена: {item[3]:.2f} лв.)": (item[0], item[1], item[2], item[3]) for
-            item in items}
+            f"{item} (Наличност: {item} бр. | Цена: {item[3]:.2f} лв.)": item for item in items
+        }
 
         if 'sup_name_val' not in st.session_state:
             st.session_state['sup_name_val'] = ""
@@ -380,7 +453,7 @@ elif choice == "📝 Вход / Изход с Документ":
             st.session_state['sup_addr_val'] = ""
 
         with st.expander("🔍 Бърза справка за Контрагент по БУЛСТАТ / ЕИК"):
-            c_eik, c_btn = st.columns([3, 1])
+            c_eik, c_btn = st.columns(2)
             eik_sup_search = c_eik.text_input("ЕИК на контрагента:", key="sup_eik_search")
             if c_btn.button("Търси в Търговския регистър"):
                 if eik_sup_search:
@@ -393,13 +466,15 @@ elif choice == "📝 Вход / Изход с Документ":
                         st.warning(err_sup)
 
         action = st.radio("Изберете операция:", ["Заприходяване (Вход +)", "Изписване (Изход -)"], key="action_select")
-        
+
         is_entry = "Вход" in action
         party_label = "Доставчик" if is_entry else "Клиент"
 
         with st.form("movement_form"):
             selected_option = st.selectbox("Изберете артикул*", list(item_dict.keys()))
-            item_id, item_name, current_qty, current_price = item_dict[selected_option]
+            selected_row = item_dict[selected_option]
+            item_id, item_name, current_qty, current_price = selected_row[0], selected_row, selected_row, selected_row[
+                3]
 
             c2, c3 = st.columns(2)
             with c2:
@@ -423,11 +498,15 @@ elif choice == "📝 Вход / Изход с Документ":
             st.markdown(f"##### 🏢 Данни за Контрагента ({party_label})")
             sup1, sup2, sup3 = st.columns(3)
             with sup1:
-                supplier_name = st.text_input(f"Фирма ({party_label})", value=st.session_state['sup_name_val'], placeholder="напр. Клиент ЕООД")
+                supplier_name = st.text_input(f"Фирма ({party_label})", value=st.session_state['sup_name_val'],
+                                              placeholder="напр. Клиент ЕООД")
             with sup2:
-                supplier_eik = st.text_input(f"ЕИК / БУЛСТАТ ({party_label})", value=eik_sup_search if 'sup_eik_search' in st.session_state and eik_sup_search else "", placeholder="напр. 123456789")
+                supplier_eik = st.text_input(f"ЕИК / БУЛСТАТ ({party_label})",
+                                             value=eik_sup_search if 'sup_eik_search' in st.session_state and eik_sup_search else "",
+                                             placeholder="напр. 123456789")
             with sup3:
-                supplier_address = st.text_input(f"Адрес ({party_label})", value=st.session_state['sup_addr_val'], placeholder="гр. Попово, ул. Промишлена 1")
+                supplier_address = st.text_input(f"Адрес ({party_label})", value=st.session_state['sup_addr_val'],
+                                                 placeholder="гр. Попово, ул. Промишлена 1")
 
             submit_move = st.form_submit_button("💾 Регистрирай движението")
 
@@ -456,12 +535,11 @@ elif choice == "📝 Вход / Изход с Документ":
                              full_timestamp)
                         )
                         conn.commit()
-                        st.success(f"✅ Запазено с час {doc_time.strftime('%H:%M')}! Ново количество за '{item_name}': {new_qty} бр.")
+                        st.success(
+                            f"✅ Запазено с час {doc_time.strftime('%H:%M')}! Ново количество за '{item_name}': {new_qty} бр.")
                         st.rerun()
     else:
         st.info("Няма налични артикули за тази фирма.")
-
-
 # --- 8.3. ДОБАВЯНЕ НА НОВ АРТИКУЛ ---
 elif choice == "➕ Добавяне на Нов Артикул":
     st.subheader(f"➕ Нов продукт за: {selected_company_name}")
@@ -508,11 +586,11 @@ elif choice == "✏️ Редакция / Изтриване":
     items = cursor.fetchall()
 
     if items:
-        item_dict = {f"{item[1]} (Категория: {item[2]})": item for item in items}
+        item_dict = {f"{item} (Категория: {item})": item for item in items}
         selected_item_name = st.selectbox("Изберете артикул за промяна", list(item_dict.keys()))
         selected_item = item_dict[selected_item_name]
 
-        item_id, item_name, item_cat, item_limit, item_price = selected_item
+        item_id, item_name, item_cat, item_limit, item_price = selected_item[0], selected_item, selected_item, selected_item[3], selected_item[4]
 
         st.markdown("---")
         c1, c2 = st.columns(2)
@@ -542,20 +620,36 @@ elif choice == "✏️ Редакция / Изтриване":
                 st.rerun()
     else:
         st.info("Няма налични артикули.")
-
-
 # --- 8.5. ИСТОРИЯ И ДОКУМЕНТИ ---
 elif choice == "📜 История и Документи":
     st.subheader(f"📜 Журнал на движенията за: {selected_company_name}")
 
-    df_history = pd.read_sql_query(
-        '''SELECT id AS 'ID', timestamp AS 'Дата/Час', doc_type AS 'Вид Документ', doc_number AS '№ Документ', 
-                  doc_date AS 'Дата Документ', supplier_name AS 'Контрагент (Доставчик/Клиент)', 
-                  supplier_eik AS 'ЕИК Контрагент', supplier_address AS 'Адрес Контрагент',
-                  item_name AS 'Артикул', action_type AS 'Операция', quantity_change AS 'Количество', unit_price AS 'Ед. цена (лв.)'
-           FROM movement_history WHERE company_id = ? ORDER BY id DESC''',
-        conn, params=(current_company_id,)
-    )
+    st.markdown("##### 📅 Филтриране на историята по период")
+    col_h1, col_h2, col_h3 = st.columns(3)
+    with col_h1:
+        hist_start_date = st.date_input("От дата (история):", date.today() - timedelta(days=30), key="hist_start")
+    with col_h2:
+        hist_end_date = st.date_input("До дата (история):", date.today(), key="hist_end")
+    with col_h3:
+        filter_item_name = st.text_input("Търсене по име на артикул (по избор):", key="hist_item_search")
+
+    h_start_str = hist_start_date.strftime("%Y-%m-%d 00:00:00")
+    h_end_str = (hist_end_date + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
+
+    full_sql = """
+        SELECT id AS 'ID', timestamp AS 'Дата/Час', doc_type AS 'Вид Документ', doc_number AS '№ Документ', 
+               doc_date AS 'Дата Документ', supplier_name AS 'Контрагент', item_name AS 'Артикул', 
+               action_type AS 'Операция', quantity_change AS 'Количество', unit_price AS 'Ед. цена (лв.)' 
+        FROM movement_history 
+        WHERE company_id = ? AND timestamp >= ? AND timestamp < ?
+    """
+    params_list = [current_company_id, h_start_str, h_end_str]
+
+    if filter_item_name.strip():
+        full_sql += " AND item_name LIKE ?"
+        params_list.append(f"%{filter_item_name.strip()}%")
+
+    df_history = pd.read_sql_query(full_sql + " ORDER BY id DESC", conn, params=tuple(params_list))
 
     if not df_history.empty:
         df_history["Обща Стойност (лв.)"] = df_history["Количество"].abs() * df_history["Ед. цена (лв.)"]
@@ -568,11 +662,19 @@ elif choice == "📜 История и Документи":
 
         st.markdown("---")
         st.markdown("#### ✏️ Корекция на дата и час на съществуващо движение")
-        cursor.execute("SELECT id, item_name, timestamp, doc_number FROM movement_history WHERE company_id = ? ORDER BY id DESC LIMIT 50", (current_company_id,))
+
+        cursor.execute(
+            "SELECT id, item_name, action_type, quantity_change, timestamp, doc_number FROM movement_history WHERE company_id = ? ORDER BY id DESC LIMIT 50",
+            (current_company_id,)
+        )
         move_rows = cursor.fetchall()
+
         if move_rows:
-            move_dict = {f"ID {m[0]} | Артикул: {m[1]} | Текущо време: {m[2]} (Док. № {m[3]})": m[0] for m in move_rows}
-            selected_move_label = st.selectbox("Изберете запис за корекция на дата/час:", list(move_dict.keys()))
+            move_dict = {
+                f"ID {m[0]} | Артикул: {m} ({m[2]} {m[3]} бр.) | Док. № {m[5]} | Време: {m[4]}": m[0]
+                for m in move_rows
+            }
+            selected_move_label = st.selectbox("Изберете запис за корекция:", list(move_dict.keys()))
             selected_move_id = move_dict[selected_move_label]
 
             col_m1, col_m2, col_m3 = st.columns(3)
@@ -584,14 +686,13 @@ elif choice == "📜 История и Документи":
                 st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
                 if st.button("💾 Обнови дата и час"):
                     new_full_ts = datetime.combine(new_date_val, new_time_val).strftime("%Y-%m-%d %H:%M:%S")
-                    cursor.execute("UPDATE movement_history SET timestamp = ? WHERE id = ?", (new_full_ts, selected_move_id))
+                    cursor.execute("UPDATE movement_history SET timestamp = ? WHERE id = ?",
+                                   (new_full_ts, selected_move_id))
                     conn.commit()
                     st.success("✅ Датата и часът бяха обновени успешно!")
                     st.rerun()
     else:
-        st.info("Няма регистрирани движения.")
-
-
+        st.info("Няма регистрирани движения за избрания период.")
 # --- 8.6. КРИТИЧНИ НАЛИЧНОСТИ ---
 elif choice == "⚠️ Критични Наличности":
     st.subheader(f"⚠️ Критични наличности за: {selected_company_name}")
@@ -612,7 +713,7 @@ elif choice == "⚠️ Критични Наличности":
 elif choice == "🏢 Управление на Фирми":
     st.subheader("🏢 Добавяне на нова фирма/клиент с реална проверка по ЕИК")
 
-    col_eik, col_btn = st.columns([3, 1])
+    col_eik, col_btn = st.columns()
     with col_eik:
         eik_search = st.text_input("Въведете БУЛСТАТ / ЕИК номер:", placeholder="напр. 831011527")
     with col_btn:
@@ -672,7 +773,7 @@ elif choice == "📦 Архивиране и Възстановяване":
 
     with col_bak1:
         st.markdown("#### 📥 Създаване на архив (Backup)")
-        
+
         period_option = st.selectbox(
             "Изберете период за филтриране на движенията:",
             ["За 1 месец", "За 6 месеца", "За 1 година", "От дата до дата (произволен)", "Всички данни (Пълен архив)"]
@@ -706,7 +807,7 @@ elif choice == "📦 Архивиране и Възстановяване":
                 start_str = start_date.strftime("%Y-%m-%d 00:00:00")
                 end_str = (end_date + timedelta(days=1)).strftime("%Y-%m-%d 00:00:00")
                 df_movements = pd.read_sql_query(
-                    "SELECT * FROM movement_history WHERE timestamp >= ? AND timestamp < ?", 
+                    "SELECT * FROM movement_history WHERE timestamp >= ? AND timestamp < ?",
                     conn, params=(start_str, end_str)
                 )
                 period_label = f"{start_date.strftime('%d.%m.%Y')} - {end_date.strftime('%d.%m.%Y')}"
@@ -750,12 +851,14 @@ elif choice == "📦 Архивиране и Възстановяване":
                     for comp in data.get('companies', []):
                         cursor.execute(
                             "INSERT OR REPLACE INTO companies (id, name, eik, address, mol) VALUES (?, ?, ?, ?, ?)",
-                            (comp.get('id'), comp.get('name'), comp.get('eik', ''), comp.get('address', ''), comp.get('mol', ''))
+                            (comp.get('id'), comp.get('name'), comp.get('eik', ''), comp.get('address', ''),
+                             comp.get('mol', ''))
                         )
                     for item in data.get('inventory', []):
                         cursor.execute(
                             "INSERT OR REPLACE INTO inventory (id, company_id, name, category, quantity, min_limit, price) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                            (item.get('id'), item.get('company_id'), item.get('name'), item.get('category'), item.get('quantity'), item.get('min_limit'), item.get('price'))
+                            (item.get('id'), item.get('company_id'), item.get('name'), item.get('category'),
+                             item.get('quantity'), item.get('min_limit'), item.get('price'))
                         )
                     for move in data.get('movement_history', []):
                         cursor.execute(
