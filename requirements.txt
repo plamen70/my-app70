@@ -1,3 +1,4 @@
 streamlit
-formspree
+pandas
 requests
+reportlab
