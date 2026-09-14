@@ -737,7 +737,7 @@ elif choice == "⚠️ Критични Наличности":
 elif choice == "🏢 Управление на Фирми":
     st.subheader("🏢 Добавяне на нова фирма/клиент с реална проверка по ЕИК")
 
-    col_eik, col_btn = st.columns()
+    col_eik, col_btn = st.columns(2)
     with col_eik:
         eik_search = st.text_input("Въведете БУЛСТАТ / ЕИК номер:", placeholder="напр. 831011527")
     with col_btn:
