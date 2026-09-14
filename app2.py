@@ -31,7 +31,18 @@ st.set_page_config(
 
 st.markdown("""
     <style>
-    .main { background-color: #f8f9fa; }
+    /* Цветът на целия фон извън работната зона */
+    .stApp {
+        background-color: #eef2f7;
+    }
+    /* Цветът на основния работен панел */
+    .main {
+        background-color: #ffffff;
+    }
+    /* Цветът на страничния панел (sidebar) */
+    [data-testid="stSidebar"] {
+        background-color: #dfe7ef;
+    }
     .stDownloadButton > button {
         background-color: #0d6efd !important;
         color: white !important;
@@ -43,7 +54,6 @@ st.markdown("""
     .stDownloadButton > button:hover { background-color: #0b5ed7 !important; }
     </style>
 """, unsafe_allow_html=True)
-
 
 # --- 2. БАЗА ДАННИ И МИГРАЦИЯ ---
 @st.cache_resource
@@ -493,8 +503,12 @@ elif choice == "📝 Вход / Изход с Документ":
             with d3:
                 doc_date = st.date_input("Дата на документ", date.today())
             with d4:
-                doc_time = st.time_input("Час на документ", datetime.now().time())
-
+                doc_time_str = st.text_input(
+                    "Час на документ (HH:MM)",
+                    value=datetime.now().strftime("%H:%M"),
+                    max_chars=5,
+                    placeholder="14:30"
+                )
             st.markdown(f"##### 🏢 Данни за Контрагента ({party_label})")
             sup1, sup2, sup3 = st.columns(3)
             with sup1:
@@ -520,7 +534,12 @@ elif choice == "📝 Вход / Изход с Документ":
                     else:
                         action_text = "Вход (+)" if is_entry else "Изход (-)"
                         change_val = change_qty if is_entry else -change_qty
-                        full_timestamp = datetime.combine(doc_date, doc_time).strftime("%Y-%m-%d %H:%M:%S")
+                        try:
+                            parsed_doc_time = datetime.strptime(doc_time_str.strip(), "%H:%M").time()
+                        except ValueError:
+                            parsed_doc_time = datetime.now().time()
+
+                        full_timestamp = datetime.combine(doc_date, parsed_doc_time).strftime("%Y-%m-%d %H:%M:%S")
 
                         cursor.execute("UPDATE inventory SET quantity = ?, price = ? WHERE id = ?",
                                        (new_qty, unit_price, item_id))
@@ -681,7 +700,12 @@ elif choice == "📜 История и Документи":
             with col_m1:
                 new_date_val = st.date_input("Нова дата:")
             with col_m2:
-                new_time_val = st.time_input("Нов час:")
+                new_time_str = st.text_input(
+                    "Нов час (HH:MM)",
+                    value=datetime.now().strftime("%H:%M"),
+                    max_chars=5,
+                    placeholder="14:30"
+                )
             with col_m3:
                 st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
                 if st.button("💾 Обнови дата и час"):
