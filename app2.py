@@ -9,17 +9,14 @@ import json
 import urllib.request
 
 # --- ИМПОРТИРАНЕ НА REPORTLAB ЗА PDF ---
-try:
-    from reportlab.lib.pagesizes import letter
-    from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib import colors
-    from reportlab.pdfbase import pdfmetrics
-    from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.lib.pagesizes import letter
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib import colors
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
 
-    PDF_AVAILABLE = True
-except ImportError:
-    PDF_AVAILABLE = False
+PDF_AVAILABLE = True
 
 # --- 1. НАСТРОЙКА НА СТРАНИЦАТА ---
 st.set_page_config(
@@ -434,9 +431,8 @@ if choice == "📊 Табло & Наличности":
 
         col_pdf, col_csv = st.columns(2)
         with col_pdf:
-            if PDF_AVAILABLE:
-                pdf_data = generate_pdf(df_report, f"Справка Салда - {selected_company_name}")
-                st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
+            pdf_data = generate_pdf(df_report, f"Справка Салда - {selected_company_name}")
+            st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
                                    file_name=f"spravka_salda_{datetime.now().strftime('%Y%m%d')}.pdf",
                                    mime="application/pdf")
         with col_csv:
@@ -445,7 +441,7 @@ if choice == "📊 Табло & Наличности":
                                file_name=f"spravka_salda_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
     else:
         st.info("Няма въведени артикули за тази фирма.")
-# --- 8.2. ВХОД / ИЗХОД С ДОКУМЕНТ ---
+    # --- 8.2. ВХОД / ИЗХОД С ДОКУМЕНТ ---
 elif choice == "📝 Вход / Изход с Документ":
     st.subheader(f"📝 Движение на стока за: {selected_company_name}")
 
@@ -454,7 +450,7 @@ elif choice == "📝 Вход / Изход с Документ":
 
     if items:
         item_dict = {
-            f"{item} (Наличност: {item} бр. | Цена: {item[3]:.2f} лв.)": item for item in items
+            f"{item[1]} (Наличност: {item[2]} бр. | Цена: {item[3]:.2f} лв.)": item for item in items
         }
 
         if 'sup_name_val' not in st.session_state:
@@ -483,8 +479,8 @@ elif choice == "📝 Вход / Изход с Документ":
         with st.form("movement_form"):
             selected_option = st.selectbox("Изберете артикул*", list(item_dict.keys()))
             selected_row = item_dict[selected_option]
-            item_id, item_name, current_qty, current_price = selected_row[0], selected_row, selected_row, selected_row[
-                3]
+            item_id, item_name, current_qty, current_price = selected_row[0], selected_row[1], selected_row[2], \
+            selected_row[3]
 
             c2, c3 = st.columns(2)
             with c2:
@@ -555,10 +551,40 @@ elif choice == "📝 Вход / Изход с Документ":
                         )
                         conn.commit()
                         st.success(
-                            f"✅ Запазено с час {doc_time.strftime('%H:%M')}! Ново количество за '{item_name}': {new_qty} бр.")
+                            f"✅ Запазено с час {parsed_doc_time.strftime('%H:%M')}! Ново количество за '{item_name}': {new_qty} бр.")
                         st.rerun()
     else:
         st.info("Няма налични артикули за тази фирма.")
+
+    st.markdown("---")
+    st.subheader("📊 История на движенията и справка")
+    cursor.execute("""
+         SELECT doc_date as Дата, doc_type as "Вид документ", doc_number as "Номер", 
+                item_name as "Артикул", action_type as "Операция", quantity_change as "Кол.", 
+                unit_price as "Цена" 
+         FROM movement_history 
+         WHERE company_id = ? 
+         ORDER BY id DESC
+     """, (current_company_id,))
+    rows = cursor.fetchall()
+    if rows:
+        df_movements = pd.DataFrame(rows,
+                                    columns=["Дата", "Вид документ", "Номер", "Артикул", "Операция", "Кол.", "Цена"])
+        st.dataframe(df_movements, use_container_width=True)
+
+        col_pdf, col_csv = st.columns(2)
+        with col_pdf:
+            if PDF_AVAILABLE:
+                pdf_data = generate_pdf(df_movements, f"Справка Движения - {selected_company_name}")
+                st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
+                                   file_name=f"spravka_dvijenia_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                   mime="application/pdf")
+        with col_csv:
+            csv_data = df_movements.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Изтегли Справката в CSV (Excel)", data=csv_data,
+                               file_name=f"spravka_dvijenia_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    else:
+        st.info("Все още няма регистрирани движения за тази фирма.")
 # --- 8.3. ДОБАВЯНЕ НА НОВ АРТИКУЛ ---
 elif choice == "➕ Добавяне на Нов Артикул":
     st.subheader(f"➕ Нов продукт за: {selected_company_name}")
@@ -592,10 +618,38 @@ elif choice == "➕ Добавяне на Нов Артикул":
                     )
                 conn.commit()
                 st.success(f"🎉 Успешно добавен артикул '{name}'!")
+                st.rerun()
             else:
                 st.error("Наименованието е задължително!")
 
+    st.markdown("---")
+    st.subheader("📋 Списък с артикули за фирмата")
+    cursor.execute("""
+        SELECT id as ID, name as Артикул, category as Категория, 
+               quantity as Количество, price as "Цена (лв.)", min_limit as Мин_праг 
+        FROM inventory 
+        WHERE company_id = ? 
+        ORDER BY id DESC
+    """, (current_company_id,))
+    rows = cursor.fetchall()
 
+    if rows:
+        df_items = pd.DataFrame(rows, columns=["ID", "Артикул", "Категория", "Количество", "Цена (лв.)", "Мин_праг"])
+        st.dataframe(df_items, use_container_width=True)
+
+        col_pdf, col_csv = st.columns(2)
+        with col_pdf:
+            if PDF_AVAILABLE:
+                pdf_data = generate_pdf(df_items, f"Справка Артикули - {selected_company_name}")
+                st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
+                                   file_name=f"spravka_artikuli_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                   mime="application/pdf")
+        with col_csv:
+            csv_data = df_items.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Изтегли Справката в CSV (Excel)", data=csv_data,
+                               file_name=f"spravka_artikuli_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    else:
+        st.info("Все още няма добавени артикули за тази фирма.")
 # --- 8.4. РЕДАКЦИЯ / ИЗТРИВАНЕ ---
 elif choice == "✏️ Редакция / Изтриване":
     st.subheader(f"✏️ Редакция и премахване на артикули за: {selected_company_name}")
@@ -605,11 +659,11 @@ elif choice == "✏️ Редакция / Изтриване":
     items = cursor.fetchall()
 
     if items:
-        item_dict = {f"{item} (Категория: {item})": item for item in items}
+        item_dict = {f"{item[1]} (Категория: {item[2] if item[2] else 'няма'})": item for item in items}
         selected_item_name = st.selectbox("Изберете артикул за промяна", list(item_dict.keys()))
         selected_item = item_dict[selected_item_name]
 
-        item_id, item_name, item_cat, item_limit, item_price = selected_item[0], selected_item, selected_item, selected_item[3], selected_item[4]
+        item_id, item_name, item_cat, item_limit, item_price = selected_item[0], selected_item[1], selected_item[2], selected_item[3], selected_item[4]
 
         st.markdown("---")
         c1, c2 = st.columns(2)
@@ -639,6 +693,33 @@ elif choice == "✏️ Редакция / Изтриване":
                 st.rerun()
     else:
         st.info("Няма налични артикули.")
+
+    st.markdown("---")
+    st.subheader("📋 Актуален списък с артикули")
+    cursor.execute("""
+        SELECT id as ID, name as Артикул, category as Категория, 
+               min_limit as Мин_праг, price as "Цена (лв.)" 
+        FROM inventory 
+        WHERE company_id = ? 
+        ORDER BY id DESC
+    """, (current_company_id,))
+    rows = cursor.fetchall()
+
+    if rows:
+        df_edit = pd.DataFrame(rows, columns=["ID", "Артикул", "Категория", "Мин_праг", "Цена (лв.)"])
+        st.dataframe(df_edit, use_container_width=True)
+
+        col_pdf, col_csv = st.columns(2)
+        with col_pdf:
+            if PDF_AVAILABLE:
+                pdf_data = generate_pdf(df_edit, f"Справка Артикули - {selected_company_name}")
+                st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
+                                   file_name=f"spravka_edit_artikuli_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                   mime="application/pdf")
+        with col_csv:
+            csv_data = df_edit.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Изтегли Справката в CSV (Excel)", data=csv_data,
+                               file_name=f"spravka_edit_artikuli_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
 # --- 8.5. ИСТОРИЯ И ДОКУМЕНТИ ---
 elif choice == "📜 История и Документи":
     st.subheader(f"📜 Журнал на движенията за: {selected_company_name}")
@@ -674,10 +755,24 @@ elif choice == "📜 История и Документи":
         df_history["Обща Стойност (лв.)"] = df_history["Количество"].abs() * df_history["Ед. цена (лв.)"]
         st.dataframe(df_history, use_container_width=True)
 
-        if PDF_AVAILABLE:
-            pdf_history = generate_pdf(df_history, f"Журнал Движения - {selected_company_name}")
-            st.download_button("📥 Изтегли Журнала в PDF", data=pdf_history,
-                               file_name=f"zhurnal_{datetime.now().strftime('%Y%m%d')}.pdf", mime="application/pdf")
+        col_pdf, col_csv = st.columns(2)
+        with col_pdf:
+            if PDF_AVAILABLE:
+                pdf_history = generate_pdf(df_history, f"Журнал Движения - {selected_company_name}")
+                st.download_button(
+                    "📥 Изтегли Журнала в PDF",
+                    data=pdf_history,
+                    file_name=f"zhurnal_{datetime.now().strftime('%Y%m%d')}.pdf",
+                    mime="application/pdf"
+                )
+        with col_csv:
+            csv_data = df_history.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                "📥 Изтегли Журнала в CSV (Excel)",
+                data=csv_data,
+                file_name=f"zhurnal_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
 
         st.markdown("---")
         st.markdown("#### ✏️ Корекция на дата и час на съществуващо движение")
@@ -690,7 +785,7 @@ elif choice == "📜 История и Документи":
 
         if move_rows:
             move_dict = {
-                f"ID {m[0]} | Артикул: {m} ({m[2]} {m[3]} бр.) | Док. № {m[5]} | Време: {m[4]}": m[0]
+                f"ID {m[0]} | Артикул: {m[1]} ({m[2]} {m[3]} бр.) | Док. № {m[5]} | Време: {m[4]}": m[0]
                 for m in move_rows
             }
             selected_move_label = st.selectbox("Изберете запис за корекция:", list(move_dict.keys()))
@@ -709,7 +804,11 @@ elif choice == "📜 История и Документи":
             with col_m3:
                 st.markdown("<div style='margin-top: 28px;'></div>", unsafe_allow_html=True)
                 if st.button("💾 Обнови дата и час"):
-                    new_full_ts = datetime.combine(new_date_val, new_time_val).strftime("%Y-%m-%d %H:%M:%S")
+                    try:
+                        parsed_time = datetime.strptime(new_time_str.strip(), "%H:%M").time()
+                    except ValueError:
+                        parsed_time = datetime.now().time()
+                    new_full_ts = datetime.combine(new_date_val, parsed_time).strftime("%Y-%m-%d %H:%M:%S")
                     cursor.execute("UPDATE movement_history SET timestamp = ? WHERE id = ?",
                                    (new_full_ts, selected_move_id))
                     conn.commit()
@@ -729,10 +828,20 @@ elif choice == "⚠️ Критични Наличности":
     if not df_crit.empty:
         st.warning(f"Намерени са {len(df_crit)} артикула под минималния праг!")
         st.dataframe(df_crit, use_container_width=True)
+
+        col_pdf, col_csv = st.columns(2)
+        with col_pdf:
+            if PDF_AVAILABLE:
+                pdf_data = generate_pdf(df_crit, f"Критични Наличности - {selected_company_name}")
+                st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
+                                   file_name=f"spravka_kritichni_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                   mime="application/pdf")
+        with col_csv:
+            csv_data = df_crit.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Изтегли Справката в CSV (Excel)", data=csv_data,
+                               file_name=f"spravka_kritichni_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
     else:
         st.success("🎉 Всички артикули са над минималния праг!")
-
-
 # --- 8.7. УПРАВЛЕНИЕ НА ФИРМИ ---
 elif choice == "🏢 Управление на Фирми":
     st.subheader("🏢 Добавяне на нова фирма/клиент с реална проверка по ЕИК")
@@ -786,9 +895,23 @@ elif choice == "🏢 Управление на Фирми":
     st.markdown("### 📋 Списък на регистрираните фирми")
     df_comp = pd.read_sql_query(
         "SELECT id AS ID, name AS 'Фирма', eik AS 'ЕИК/БУЛСТАТ', address AS 'Адрес', mol AS 'МОЛ' FROM companies", conn)
-    st.dataframe(df_comp, use_container_width=True)
 
+    if not df_comp.empty:
+        st.dataframe(df_comp, use_container_width=True)
 
+        col_pdf, col_csv = st.columns(2)
+        with col_pdf:
+            if PDF_AVAILABLE:
+                pdf_data = generate_pdf(df_comp, "Справка Регистрирани Фирми")
+                st.download_button("📥 Изтегли Справката в PDF", data=pdf_data,
+                                   file_name=f"spravka_firmi_{datetime.now().strftime('%Y%m%d')}.pdf",
+                                   mime="application/pdf")
+        with col_csv:
+            csv_data = df_comp.to_csv(index=False).encode('utf-8-sig')
+            st.download_button("📥 Изтегли Справката в CSV (Excel)", data=csv_data,
+                               file_name=f"spravka_firmi_{datetime.now().strftime('%Y%m%d')}.csv", mime="text/csv")
+    else:
+        st.info("Все още няма регистрирани фирми в системата.")
 # --- 8.8. АРХИВИРАНЕ И ВЪЗСТАНОВЯВАНЕ ПО ПЕРИОД ИЛИ ДАТИ ---
 elif choice == "📦 Архивиране и Възстановяване":
     st.subheader("📦 Архивиране и възстановяване на базата данни")
